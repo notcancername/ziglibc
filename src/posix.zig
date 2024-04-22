@@ -1,6 +1,7 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const os = std.os;
+const assert = std.debug.assert;
 
 const c = @cImport({
     @cInclude("errno.h");
@@ -21,17 +22,181 @@ const cstd = struct {
 
 const trace = @import("trace.zig");
 
-const global = struct {
-    export var optarg: [*:0]u8 = undefined;
-    export var opterr: c_int = undefined;
-    export var optind: c_int = 1;
-    export var optopt: c_int = undefined;
+pub const GetoptContext = extern struct {
+    optarg: ?[*:0]const u8 = null,
+    opterr: c_int = 1,
+    optind: c_int = 1,
+    optopt: c_int = undefined,
+    // When an element of `argv` contains multiple option characters, it is unspecified how `getopt`
+    // determines which options have already been processed.
+    //
+    // so we use an additional cursor variable
+    optcur: c_int = 0,
 };
+
+export fn z_getopt_r(context: *GetoptContext, argc: c_int, argv: [*]const ?[*:0]const u8, optstring: [*:0]const u8) callconv(.C) c_int {
+    var mut_optstring = optstring;
+
+    const first_char_was_colon = mut_optstring[0] == ':';
+
+    // If the application has not set the variable opterr to 0 and the first character of optstring
+    // is not a <colon>, getopt() shall also print a diagnostic message to stderr in the format
+    // specified for the getopts utility, unless the stderr stream has wide orientation, in which
+    // case the behavior is undefined.
+    const report_errors = first_char_was_colon or context.opterr != 0;
+
+    if (first_char_was_colon) mut_optstring += 1;
+
+    if (context.optind == 0) {
+        // If the application sets `optind` to zero before calling `getopt`, the behavior is
+        // unspecified.
+        unreachable; // setting `optind` to zero is not portable
+    }
+
+    // `getopt` shall return `-1` when all command line options are parsed.
+    if (context.optind > argc) {
+        return -1;
+    }
+
+    // If, when `getopt` is called:
+    // - `argv[optind]` is a null pointer
+    var arg = argv[@as(usize, @intCast(context.optind))] orelse return -1;
+
+    // - `*argv[optind]` is not the character `-`
+    // - `argv[optind]` points to the string `"-"`
+    // `getopt` shall return `-1` without changing `optind`.
+    if (arg[0] != '-' or arg[1] == 0) {
+        return -1;
+    }
+
+    // If `argv[optind]` points to the string `"--"` `getopt` shall return `-1` after incrementing
+    // optind.
+    if (arg[1] == '-' and arg[2] == 0) {
+        return -1;
+    }
+
+    arg += 1;
+    arg += @as(usize, @intCast(context.optcur));
+
+    const opt_char = arg[0];
+    assert(opt_char != 0);
+
+    const is_last_char = arg[1] == 0;
+
+    const opt_ptr = c.strchr(mut_optstring, opt_char) orelse {
+        context.optopt = opt_char;
+        if (report_errors) {
+            // in the format specified for the getopts utility
+            _ = c.fprintf(c.stderr, "%s: illegal option -- %c\n", argv[0], @as(c_int, opt_char));
+        }
+        // If `getopt` encounters an option character that is not contained in optstring, it shall
+        // return the `<question-mark>` ( `'?'` ) character.
+        return '?';
+    };
+
+    const takes_arg = opt_ptr[1] == ':';
+
+    if (is_last_char) {
+        context.optind += 1;
+        context.optcur = 0;
+    } else {
+        context.optcur += 1;
+    }
+
+    if (takes_arg) {
+        // If the option takes an argument, `getopt` shall set the variable `optarg` to point to the
+        // option-argument as follows:
+        if (is_last_char) {
+            // If the option was the last character in the string pointed to by an element of argv,
+            // then optarg shall contain the next element of argv, and optind shall be incremented
+            // by 2.
+            context.optarg = argv[@as(usize, @intCast(context.optind))];
+            context.optind += 1;
+
+            // If the resulting value of optind is greater than argc, this indicates a missing
+            // option-argument, and `getopt` shall return an error indication.
+            if (context.optind > argc) {
+                if (report_errors) {
+                    // in the format specified for the getopts utility
+                    _ = c.fprintf(c.stderr, "%s: option requires an argument -- %c\n", argv[0], @as(c_int, opt_char));
+                }
+                // If it detects a missing option-argument, it shall return the <colon> character ( ':'
+                // ) if the first character of optstring was a <colon>, or a <question-mark> character (
+                // '?' ) otherwise.
+                return if (first_char_was_colon) ':' else '?';
+            }
+        } else {
+            // `optarg` shall point to the string following the option character in that element of
+            // argv, and optind shall be incremented by 1.
+            context.optarg = arg + 1;
+            context.optind += 1;
+            context.optcur = 0;
+        }
+    }
+    return opt_char;
+}
+
+test z_getopt_r {
+    const optstr = "s:vyzaG:";
+    const argv: []const ?[*:0]const u8 = &[_]?[*:0]const u8{"progname", "-v", "-Gsus", "-s", "foo", "-zy", "--", "-a"};
+    var s: GetoptContext = .{};
+    try std.testing.expect(z_getopt_r(&s, argv.len, argv.ptr, optstr) == 'v' and s.optind == 2);
+    try std.testing.expect(z_getopt_r(&s, argv.len, argv.ptr, optstr) == 'G' and std.mem.eql(u8, std.mem.span(s.optarg.?), "sus") and s.optind == 3);
+    try std.testing.expect(z_getopt_r(&s, argv.len, argv.ptr, optstr) == 's' and std.mem.eql(u8, std.mem.span(s.optarg.?), "foo") and s.optind == 5);
+    try std.testing.expect(z_getopt_r(&s, argv.len, argv.ptr, optstr) == 'z' and s.optind == 6);
+    try std.testing.expect(z_getopt_r(&s, argv.len, argv.ptr, optstr) == 'y' and s.optind == 6);
+    try std.testing.expect(z_getopt_r(&s, argv.len, argv.ptr, optstr) == -1 and s.optind == 7);
+}
+
+test "z_getopt_r handles unknown options correctly without leading colon" {
+    const optstr = "s:vyzaG:";
+    const argv: []const ?[*:0]const u8 = &[_]?[*:0]const u8{"progname", "-k"};
+    var s: GetoptContext = .{.opterr = 0};
+    try std.testing.expect(z_getopt_r(&s, argv.len, argv.ptr, optstr) == '?' and s.optind == 1 and s.optopt == 'k');
+}
+
+test "z_getopt_r handles unknown options correctly with leading colon" {
+    const optstr = ":s:vyzaG:";
+    const argv: []const ?[*:0]const u8 = &[_]?[*:0]const u8{"progname", "-k"};
+    var s: GetoptContext = .{.opterr = 0};
+    try std.testing.expect(z_getopt_r(&s, argv.len, argv.ptr, optstr) == ':' and s.optind == 1 and s.optopt == 'k');
+}
+
+test "z_getopt_r handles single dash correctly " {
+    const optstr = "s:vyzaG:";
+    const argv: []const ?[*:0]const u8 = &[_]?[*:0]const u8{"progname", "-v", "-", "-l"};
+    var s: GetoptContext = .{.opterr = 0};
+    try std.testing.expect(z_getopt_r(&s, argv.len, argv.ptr, optstr) == 'v' and s.optind == 1);
+    try std.testing.expect(z_getopt_r(&s, argv.len, argv.ptr, optstr) == -1 and s.optind == 2);
+}
+
+test "z_getopt_r handles missing argument correctly without leading colon" {
+    const optstr = "s:vyzaG:";
+    const argv: []const ?[*:0]const u8 = &[_]?[*:0]const u8{"progname", "-s"};
+    var s: GetoptContext = .{.opterr = 0};
+    try std.testing.expect(z_getopt_r(&s, argv.len, argv.ptr, optstr) == '?' and s.optind == 1 and s.optopt == 's');
+}
+
+test "z_getopt_r handles missing argument correctly with leading colon" {
+    const optstr = ":s:vyzaG:";
+    const argv: []const ?[*:0]const u8 = &[_]?[*:0]const u8{"progname", "-s"};
+    var s: GetoptContext = .{.opterr = 0};
+    try std.testing.expect(z_getopt_r(&s, argv.len, argv.ptr, optstr) == ':' and s.optind == 1 and s.optopt == 's');
+}
 
 /// Returns some information through these globals
 ///    extern char *optarg;
 ///    extern int opterr, optind, optopt;
-export fn getopt(argc: c_int, argv: [*][*:0]u8, optstring: [*:0]const u8) callconv(.C) c_int {
+export fn getopt(argc: c_int, argv: [*]const ?[*:0]const u8, optstring: [*:0]const u8) callconv(.C) c_int {
+    const global = struct {
+        // The `getopt` function need not be thread-safe.
+        export var optarg: ?[*:0]const u8 = @as(GetoptContext, .{}).optarg;
+        export var opterr: c_int = @as(GetoptContext, .{}).opterr;
+        export var optind: c_int = @as(GetoptContext, .{}).optind;
+        export var optopt: c_int = @as(GetoptContext, .{}).optopt;
+        var optcur: c_int = @as(GetoptContext, .{}).optcur;
+    };
+
     trace.log("getopt argc={} argv={*} opstring={} (err={}, ind={}, opt={})", .{
         argc,
         argv,
@@ -40,40 +205,24 @@ export fn getopt(argc: c_int, argv: [*][*:0]u8, optstring: [*:0]const u8) callco
         global.optind,
         global.optopt,
     });
-    if (global.optind >= argc) {
-        trace.log("getopt return -1", .{});
-        return -1;
-    }
-    const arg = argv[@as(usize, @intCast(global.optind))];
-    if (arg[0] != '-') {
-        // TODO: not sure if this is what we're supposed to do
-        //       my guess is we have to take this non-option
-        //       argument and move it to the front of argv,
-        //       then move on to the rest of the arguments to
-        //       check for more options
-        if (global.optind + 1 != argc) {
-            @panic("TODO: check the rest of the arguments");
-        }
-        return -1;
+
+    var s: GetoptContext = .{
+        .optarg = global.optarg,
+        .opterr = global.opterr,
+        .optind = global.optind,
+        .optopt = global.optopt,
+        .optcur = global.optcur,
+    };
+
+    defer {
+        global.optarg = s.optarg;
+        global.opterr = s.opterr;
+        global.optind = s.optind;
+        global.optopt = s.optopt;
+        global.optcur = s.optcur;
     }
 
-    global.optind += 1;
-    if (arg[2] != 0) @panic("multi-letter argument not implemented");
-    const result = c.strchr(optstring, arg[1]) orelse {
-        // I think we return '?'
-        std.debug.panic("unknown option '{}', probably return '?'", .{arg[1]});
-    };
-    const takes_arg = result[1] == ':';
-    if (takes_arg) {
-        const is_optional = result[2] == ':';
-        if (is_optional) @panic("optional args not implemented");
-        global.optarg = argv[@as(usize, @intCast(global.optind))];
-        if (global.optind >= argc or global.optarg[0] == '-') {
-            std.debug.panic("TODO: handle missing arg for option '{}", .{arg[1]});
-        }
-        global.optind += 1;
-    }
-    return @as(c_int, arg[1]);
+    return z_getopt_r(&s, argc, argv, optstring);
 }
 
 export fn write(fd: c_int, buf: [*]const u8, nbyte: usize) callconv(.C) isize {

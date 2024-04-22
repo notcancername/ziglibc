@@ -22,7 +22,7 @@ const cstd = struct {
 
 const trace = @import("trace.zig");
 
-pub const GetoptContext = extern struct {
+const GetoptContext = extern struct {
     optarg: ?[*:0]const u8 = null,
     opterr: c_int = 1,
     optind: c_int = 1,
@@ -34,7 +34,7 @@ pub const GetoptContext = extern struct {
     optcur: c_int = 0,
 };
 
-export fn z_getopt_r(context: *GetoptContext, argc: c_int, argv: [*]const ?[*:0]const u8, optstring: [*:0]const u8) callconv(.C) c_int {
+fn z_getopt_r(context: *GetoptContext, argc: c_int, argv: [*]const ?[*:0]const u8, optstring: [*:0]const u8) callconv(.C) c_int {
     var mut_optstring = optstring;
 
     const first_char_was_colon = mut_optstring[0] == ':';

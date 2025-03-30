@@ -138,7 +138,7 @@ fn z_getopt_r(context: *GetoptContext, argc: c_int, argv: [*]const ?[*:0]const u
 
 test z_getopt_r {
     const optstr = "s:vyzaG:";
-    const argv: []const ?[*:0]const u8 = &[_]?[*:0]const u8{"progname", "-v", "-Gsus", "-s", "foo", "-zy", "--", "-a"};
+    const argv: []const ?[*:0]const u8 = &[_]?[*:0]const u8{ "progname", "-v", "-Gsus", "-s", "foo", "-zy", "--", "-a" };
     var s: GetoptContext = .{};
     try std.testing.expect(z_getopt_r(&s, argv.len, argv.ptr, optstr) == 'v' and s.optind == 2);
     try std.testing.expect(z_getopt_r(&s, argv.len, argv.ptr, optstr) == 'G' and std.mem.eql(u8, std.mem.span(s.optarg.?), "sus") and s.optind == 3);
@@ -150,37 +150,37 @@ test z_getopt_r {
 
 test "z_getopt_r handles unknown options correctly without leading colon" {
     const optstr = "s:vyzaG:";
-    const argv: []const ?[*:0]const u8 = &[_]?[*:0]const u8{"progname", "-k"};
-    var s: GetoptContext = .{.opterr = 0};
+    const argv: []const ?[*:0]const u8 = &[_]?[*:0]const u8{ "progname", "-k" };
+    var s: GetoptContext = .{ .opterr = 0 };
     try std.testing.expect(z_getopt_r(&s, argv.len, argv.ptr, optstr) == '?' and s.optind == 1 and s.optopt == 'k');
 }
 
 test "z_getopt_r handles unknown options correctly with leading colon" {
     const optstr = ":s:vyzaG:";
-    const argv: []const ?[*:0]const u8 = &[_]?[*:0]const u8{"progname", "-k"};
-    var s: GetoptContext = .{.opterr = 0};
+    const argv: []const ?[*:0]const u8 = &[_]?[*:0]const u8{ "progname", "-k" };
+    var s: GetoptContext = .{ .opterr = 0 };
     try std.testing.expect(z_getopt_r(&s, argv.len, argv.ptr, optstr) == ':' and s.optind == 1 and s.optopt == 'k');
 }
 
 test "z_getopt_r handles single dash correctly " {
     const optstr = "s:vyzaG:";
-    const argv: []const ?[*:0]const u8 = &[_]?[*:0]const u8{"progname", "-v", "-", "-l"};
-    var s: GetoptContext = .{.opterr = 0};
+    const argv: []const ?[*:0]const u8 = &[_]?[*:0]const u8{ "progname", "-v", "-", "-l" };
+    var s: GetoptContext = .{ .opterr = 0 };
     try std.testing.expect(z_getopt_r(&s, argv.len, argv.ptr, optstr) == 'v' and s.optind == 1);
     try std.testing.expect(z_getopt_r(&s, argv.len, argv.ptr, optstr) == -1 and s.optind == 2);
 }
 
 test "z_getopt_r handles missing argument correctly without leading colon" {
     const optstr = "s:vyzaG:";
-    const argv: []const ?[*:0]const u8 = &[_]?[*:0]const u8{"progname", "-s"};
-    var s: GetoptContext = .{.opterr = 0};
+    const argv: []const ?[*:0]const u8 = &[_]?[*:0]const u8{ "progname", "-s" };
+    var s: GetoptContext = .{ .opterr = 0 };
     try std.testing.expect(z_getopt_r(&s, argv.len, argv.ptr, optstr) == '?' and s.optind == 1 and s.optopt == 's');
 }
 
 test "z_getopt_r handles missing argument correctly with leading colon" {
     const optstr = ":s:vyzaG:";
-    const argv: []const ?[*:0]const u8 = &[_]?[*:0]const u8{"progname", "-s"};
-    var s: GetoptContext = .{.opterr = 0};
+    const argv: []const ?[*:0]const u8 = &[_]?[*:0]const u8{ "progname", "-s" };
+    var s: GetoptContext = .{ .opterr = 0 };
     try std.testing.expect(z_getopt_r(&s, argv.len, argv.ptr, optstr) == ':' and s.optind == 1 and s.optopt == 's');
 }
 

@@ -1,6 +1,7 @@
 const builtin = @import("builtin");
 const std = @import("std");
-const os = std.os;
+const linux = std.os.linux;
+const os = std.posix;
 const assert = std.debug.assert;
 
 const c = @cImport({
@@ -241,7 +242,7 @@ export fn write(fd: c_int, buf: [*]const u8, nbyte: usize) callconv(.C) isize {
 
 export fn read(fd: c_int, buf: [*]u8, len: usize) callconv(.C) isize {
     trace.log("read fd={} buf={*} len={}", .{ fd, buf, len });
-    const rc = os.linux.read(fd, buf, len);
+    const rc = os.system.read(fd, buf, len);
     switch (os.errno(rc)) {
         .SUCCESS => return @as(isize, @intCast(rc)),
         else => |e| {
@@ -273,8 +274,13 @@ export fn mkstemp(template: [*:0]u8) callconv(.C) c_int {
 
 export fn mkostemp(template: [*:0]u8, suffixlen: c_int, flags: c_int) callconv(.C) c_int {
     trace.log("mkstemp '{}'", .{trace.fmtStr(template)});
+
     if (builtin.os.tag == .windows) {
         @panic("mkostemp not implemented in Windows");
+    }
+
+    if (flags != 0) {
+        @panic("nonzero flags not handled");
     }
 
     const rand_part: *[6]u8 = blk: {
@@ -296,7 +302,11 @@ export fn mkostemp(template: [*:0]u8, suffixlen: c_int, flags: c_int) callconv(.
     var attempt: u32 = 0;
     while (true) : (attempt += 1) {
         randomizeTempFilename(rand_part);
-        const fd = os.system.open(template, @as(u32, @intCast(flags | os.O.RDWR | os.O.CREAT | os.O.EXCL)), 0o600);
+        const fd = os.system.open(
+            template,
+            linux.O{ .ACCMODE = .RDWR, .CREAT = true, .EXCL = true },
+            0o600,
+        );
         switch (os.errno(fd)) {
             .SUCCESS => return @as(c_int, @intCast(fd)),
             else => |e| {
@@ -320,9 +330,8 @@ fn randToFilenameChar(r: u8) u8 {
 fn randomizeTempFilename(slice: *[6]u8) void {
     var randoms: [6]u8 = undefined;
     {
-        const timestamp = std.time.nanoTimestamp();
-        var prng = std.rand.DefaultPrng.init(@as(u64, @intCast(std.math.maxInt(u64) & timestamp)));
-        prng.random().bytes(&randoms);
+        // previously used time-seeded PRNG (predictable)
+        std.crypto.random.bytes(&randoms);
     }
     var i: usize = 0;
     while (i < slice.len) : (i += 1) {
@@ -367,11 +376,11 @@ export fn fdopen(fd: c_int, mode: [*:0]const u8) callconv(.C) ?*c.FILE {
 // unistd
 // --------------------------------------------------------------------------------
 comptime {
-    if (builtin.os.tag != .windows) @export(close, .{ .name = "close" });
+    if (builtin.os.tag != .windows) @export(&close, .{ .name = "close" });
 }
 fn close(fd: c_int) callconv(.C) c_int {
     trace.log("close {}", .{fd});
-    std.os.close(fd);
+    os.close(fd);
     return 0;
 }
 
@@ -402,7 +411,7 @@ export fn _exit(status: c_int) callconv(.C) noreturn {
     }
     if (builtin.os.tag == .linux and !builtin.single_threaded) {
         // TODO: is this right?
-        os.linux.exit_group(status);
+        linux.exit_group(status);
     }
     os.system.exit(status);
 }
@@ -428,7 +437,7 @@ export fn isatty(fd: c_int) callconv(.C) c_int {
 comptime {
     std.debug.assert(@sizeOf(c.timespec) == @sizeOf(os.timespec));
     if (builtin.os.tag != .windows) {
-        std.debug.assert(c.CLOCK_REALTIME == os.CLOCK.REALTIME);
+        std.debug.assert(c.CLOCK_REALTIME == @intFromEnum(os.CLOCK.REALTIME));
     }
 }
 
@@ -450,7 +459,7 @@ export fn clock_gettime(clk_id: c.clockid_t, tp: *os.timespec) callconv(.C) c_in
         std.debug.panic("clk_id {} not implemented on Windows", .{clk_id});
     }
 
-    switch (os.errno(os.system.clock_gettime(clk_id, tp))) {
+    switch (os.errno(os.system.clock_gettime(@enumFromInt(clk_id), tp))) {
         .SUCCESS => return 0,
         else => |e| {
             c.errno = @intFromEnum(e);
@@ -497,7 +506,7 @@ export fn fstat(fd: c_int, buf: *c.struct_stat) c_int {
 
 export fn umask(mode: c.mode_t) callconv(.C) c.mode_t {
     trace.log("umask 0x{x}", .{mode});
-    const old_mode = os.linux.syscall1(.umask, @as(usize, @intCast(mode)));
+    const old_mode = linux.syscall1(.umask, @as(usize, @intCast(mode)));
     switch (os.errno(old_mode)) {
         .SUCCESS => {},
         else => |e| std.debug.panic("umask syscall should never fail but got '{s}'", .{@tagName(e)}),
@@ -527,8 +536,8 @@ export fn basename(path: ?[*:0]u8) callconv(.C) [*:0]u8 {
 // --------------------------------------------------------------------------------
 // termios
 // --------------------------------------------------------------------------------
-export fn tcgetattr(fd: c_int, ios: *os.linux.termios) callconv(.C) c_int {
-    switch (os.errno(os.linux.tcgetattr(fd, ios))) {
+export fn tcgetattr(fd: c_int, ios: *linux.termios) callconv(.C) c_int {
+    switch (os.errno(linux.tcgetattr(fd, ios))) {
         .SUCCESS => return 0,
         else => |errno| {
             c.errno = @intFromEnum(errno);
@@ -540,9 +549,9 @@ export fn tcgetattr(fd: c_int, ios: *os.linux.termios) callconv(.C) c_int {
 export fn tcsetattr(
     fd: c_int,
     optional_actions: c_int,
-    ios: *const os.linux.termios,
+    ios: *const linux.termios,
 ) callconv(.C) c_int {
-    switch (os.errno(os.linux.tcsetattr(fd, @as(os.linux.TCSA, @enumFromInt(optional_actions)), ios))) {
+    switch (os.errno(linux.tcsetattr(fd, @as(linux.TCSA, @enumFromInt(optional_actions)), ios))) {
         .SUCCESS => return 0,
         else => |errno| {
             c.errno = @intFromEnum(errno);
@@ -573,7 +582,7 @@ export fn strcasecmp(a: [*:0]const u8, b: [*:0]const u8) callconv(.C) c_int {
 // --------------------------------------------------------------------------------
 export fn _ioctlArgPtr(fd: c_int, request: c_ulong, arg_ptr: *anyopaque) c_int {
     trace.log("ioctl fd={} request=0x{x} arg={*}", .{ fd, request, arg_ptr });
-    const rc = os.linux.ioctl(fd, @as(u32, @intCast(request)), @intFromPtr(arg_ptr));
+    const rc = linux.ioctl(fd, @as(u32, @intCast(request)), @intFromPtr(arg_ptr));
     switch (os.errno(rc)) {
         .SUCCESS => return @as(c_int, @intCast(rc)),
         else => |errno| {

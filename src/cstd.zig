@@ -1,5 +1,6 @@
 const builtin = @import("builtin");
 const std = @import("std");
+const os = std.posix;
 
 const c = @cImport({
     // problem with LONG_MIN/LONG_MAX, they are currently assuming 64 bit
@@ -55,7 +56,7 @@ const windows = struct {
         dwCreationDisposition: u32,
         dwFlagsAndAttributes: u32,
         hTemplateFile: ?HANDLE,
-    ) callconv(@import("std").os.windows.WINAPI) ?HANDLE;
+    ) callconv(@import("std").std.os.windows.WINAPI) ?HANDLE;
 };
 
 // --------------------------------------------------------------------------------
@@ -80,7 +81,7 @@ export fn exit(status: c_int) callconv(.C) noreturn {
             global.atexit_funcs.items[i - 1]();
         }
     }
-    std.os.exit(@intCast(status));
+    std.process.exit(@intCast(status));
 }
 
 const ExitFunc = switch (builtin.zig_backend) {
@@ -174,7 +175,7 @@ export fn realloc(ptr: ?[*]align(alloc_align) u8, size: usize) callconv(.C) ?[*]
     }
 
     const gpa_size = alloc_metadata_len + size;
-    if (global.gpa.allocator().rawResize(gpa_buf, std.math.log2(alloc_align), gpa_size, @returnAddress())) {
+    if (global.gpa.allocator().rawResize(gpa_buf, @enumFromInt(std.math.log2(alloc_align)), gpa_size, @returnAddress())) {
         @as(*usize, @ptrCast(gpa_buf.ptr)).* = gpa_size;
         trace.log("realloc return {*}", .{ptr});
         return ptr;
@@ -219,7 +220,7 @@ export fn srand(seed: c_uint) callconv(.C) void {
 }
 
 export fn rand() callconv(.C) c_int {
-    return @as(c_int, @bitCast(@as(c_uint, @intCast(global.rand.random().int(std.math.IntFittingRange(0, c.RAND_MAX))))));
+    return global.rand.random().intRangeAtMost(c_int, 0, c.RAND_MAX);
 }
 
 export fn abs(j: c_int) callconv(.C) c_int {
@@ -457,7 +458,7 @@ fn strto(comptime T: type, str: [*:0]const u8, optional_endptr: ?*[*:0]const u8,
         break :blk 10;
     };
 
-    var digit_start = next;
+    const digit_start = next;
     var x: T = 0;
 
     while (true) : (next += 1) {
@@ -532,12 +533,12 @@ export fn strtoll(nptr: [*:0]const u8, endptr: ?*[*:0]const u8, base: c_int) cal
     return strto(c_longlong, nptr, endptr, base);
 }
 
-export fn strtoul(nptr: [*:0]const u8, endptr: ?*[*:0]u8, base: c_int) callconv(.C) c_ulong {
+export fn strtoul(nptr: [*:0]const u8, endptr: ?*[*:0]const u8, base: c_int) callconv(.C) c_ulong {
     trace.log("strtoul {} endptr={*} base={}", .{ trace.fmtStr(nptr), endptr, base });
     return strto(c_ulong, nptr, endptr, base);
 }
 
-export fn strtoull(nptr: [*:0]const u8, endptr: ?*[*:0]u8, base: c_int) callconv(.C) c_ulonglong {
+export fn strtoull(nptr: [*:0]const u8, endptr: ?*[*:0]const u8, base: c_int) callconv(.C) c_ulonglong {
     trace.log("strtoull {} endptr={*} base={}", .{ trace.fmtStr(nptr), endptr, base });
     return strto(c_ulonglong, nptr, endptr, base);
 }
@@ -562,14 +563,14 @@ export fn signal(sig: c_int, func: SignalFn) callconv(.C) ?SignalFn {
         return null;
     }
     if (builtin.os.tag == .linux) {
-        var action = std.os.Sigaction{
+        var action = os.Sigaction{
             .handler = .{ .handler = func },
             .mask = std.os.linux.empty_sigset,
-            .flags = std.os.SA.RESTART,
+            .flags = os.SA.RESTART,
             .restorer = null,
         };
-        var old_action: std.os.Sigaction = undefined;
-        switch (std.os.errno(std.os.linux.sigaction(
+        var old_action: os.Sigaction = undefined;
+        switch (os.errno(std.os.linux.sigaction(
             @as(u6, @intCast(sig)),
             &action,
             &old_action,
@@ -590,7 +591,7 @@ export fn signal(sig: c_int, func: SignalFn) callconv(.C) ?SignalFn {
 // stdio
 // --------------------------------------------------------------------------------
 const global = struct {
-    var rand: std.rand.DefaultPrng = undefined;
+    var rand: std.Random.DefaultPrng = undefined;
 
     var gpa = std.heap.GeneralPurposeAllocator(.{
         .MutexType = std.Thread.Mutex,
@@ -605,15 +606,15 @@ const global = struct {
     const max_file_count = 100;
     var files_reserved: [max_file_count]bool = [_]bool{false} ** max_file_count;
     var files: [max_file_count]c.FILE = [_]c.FILE{
-        .{ .fd = if (builtin.os.tag == .windows) undefined else std.os.STDIN_FILENO, .eof = 0, .errno = undefined },
-        .{ .fd = if (builtin.os.tag == .windows) undefined else std.os.STDOUT_FILENO, .eof = 0, .errno = undefined },
-        .{ .fd = if (builtin.os.tag == .windows) undefined else std.os.STDERR_FILENO, .eof = 0, .errno = undefined },
+        .{ .fd = if (builtin.os.tag == .windows) undefined else os.STDIN_FILENO, .eof = 0, .errno = undefined },
+        .{ .fd = if (builtin.os.tag == .windows) undefined else os.STDOUT_FILENO, .eof = 0, .errno = undefined },
+        .{ .fd = if (builtin.os.tag == .windows) undefined else os.STDERR_FILENO, .eof = 0, .errno = undefined },
     } ++ ([_]c.FILE{undefined} ** (max_file_count - 3));
 
     fn reserveFile() *c.FILE {
         var i: usize = 0;
         while (i < files_reserved.len) : (i += 1) {
-            if (!@atomicRmw(bool, &files_reserved[i], .Xchg, true, .SeqCst)) {
+            if (!@atomicRmw(bool, &files_reserved[i], .Xchg, true, .seq_cst)) {
                 return &files[i];
             }
         }
@@ -621,7 +622,7 @@ const global = struct {
     }
     fn releaseFile(file: *c.FILE) void {
         const i = (@intFromPtr(file) - @intFromPtr(&files[0])) / @sizeOf(usize);
-        if (!@atomicRmw(bool, &files_reserved[i], .Xchg, false, .SeqCst)) {
+        if (!@atomicRmw(bool, &files_reserved[i], .Xchg, false, .seq_cst)) {
             std.debug.panic("released FILE (i={} ptr={*}) that was not reserved", .{ i, file });
         }
     }
@@ -703,12 +704,12 @@ export fn getc(stream: *c.FILE) callconv(.C) c_int {
     }
 
     var buf: [1]u8 = undefined;
-    const rc = std.os.system.read(stream.fd, &buf, 1);
+    const rc = os.system.read(stream.fd, &buf, 1);
     if (rc == 1) {
         trace.log("getc return {}", .{buf[0]});
         return buf[0];
     }
-    stream.errno = if (rc == 0) 0 else @intFromEnum(std.os.errno(rc));
+    stream.errno = if (rc == 0) 0 else @intFromEnum(os.errno(rc));
     trace.log("getc return EOF, errno={}", .{stream.errno});
     return c.EOF;
 }
@@ -756,8 +757,8 @@ export fn _fread_buf(ptr: [*]u8, size: usize, stream: *c.FILE) callconv(.C) usiz
     };
     const adjusted_len = @min(max_count, size);
 
-    const rc = std.os.system.read(stream.fd, ptr, adjusted_len);
-    switch (std.os.errno(rc)) {
+    const rc = os.system.read(stream.fd, ptr, adjusted_len);
+    switch (os.errno(rc)) {
         .SUCCESS => {
             if (rc == 0) stream.eof = 1;
             return @as(usize, @intCast(rc));
@@ -824,20 +825,81 @@ pub export fn fopen(filename: [*:0]const u8, mode: [*:0]const u8) callconv(.C) ?
         return file;
     }
 
-    var flags: u32 = 0;
-    for (std.mem.span(mode)) |mode_char| {
-        if (mode_char == 'r') {
-            flags |= std.os.O.RDONLY;
-        } else if (mode_char == 'w') {
-            flags |= std.os.O.WRONLY | std.os.O.CREAT | std.os.O.TRUNC;
-        } else if (mode_char == 'b') {
-            // not really sure what this is supposed to do yet, ignore it for now
-        } else {
-            std.debug.panic("unhandled open flag '{c}' (from {})", .{ mode_char, trace.fmtStr(mode) });
+    var flags: os.O = .{};
+
+    var mode_cursor = mode;
+    var has_leading_mode = false;
+    while (mode_cursor[0] != 0) : (mode_cursor += 1) {
+        switch (mode_cursor[0]) {
+            'r' => {
+                if (has_leading_mode) trace.log("multiple leading mode flags in mode \"{s}\" ", .{std.fmt.fmtSliceEscapeLower(std.mem.span(mode))});
+
+                flags.ACCMODE = .RDONLY;
+
+                has_leading_mode = true;
+            },
+            'w' => {
+                if (has_leading_mode) trace.log("multiple leading mode flags in mode \"{s}\" ", .{std.fmt.fmtSliceEscapeLower(std.mem.span(mode))});
+
+                flags.ACCMODE = .WRONLY;
+                flags.CREAT = true;
+                flags.TRUNC = true;
+
+                has_leading_mode = true;
+            },
+            'a' => {
+                if (has_leading_mode) trace.log("multiple leading mode flags in mode \"{s}\" ", .{std.fmt.fmtSliceEscapeLower(std.mem.span(mode))});
+
+                flags.ACCMODE = .WRONLY;
+                flags.CREAT = true;
+                flags.APPEND = true;
+
+                has_leading_mode = true;
+            },
+            'b' => {}, // ignored on posixy systems
+            'c' => {
+                trace.log("glibc extension 'c' was passed in mode to fopen, but zig stdlib does not support POSIX thread cancellation", .{});
+            },
+            'e' => switch (os.system) {
+                std.os.linux, std.c => flags.CLOEXEC = true,
+                else => trace.log(
+                    "glibc extension 'e' was passed in mode to fopen, but close-on-exec is only supported on Linux",
+                    .{},
+                ),
+            },
+            'm' => {
+                trace.log("glibc extension 'm' was passed in mode to fopen, but ziglibc does not support this", .{});
+            },
+            'x' => switch (os.system) {
+                std.os.linux, std.c => flags.EXCL = true,
+                else => trace.log(
+                    "glibc extension 'x' was passed in mode to fopen, but exclusive open is only supported on Linux",
+                    .{},
+                ),
+            },
+            '+' => {
+                if (!has_leading_mode) {
+                    trace.log("'+' was passed in mode \"{s}\" to fopen, but no leading mode flag was specified", .{std.fmt.fmtSliceEscapeLower(std.mem.span(mode))});
+                }
+                flags.ACCMODE = .RDWR;
+            },
+            else => if (!has_leading_mode) {
+                trace.log("unknown leading mode flag in mode \"{s}\" passed to fopen", .{std.fmt.fmtSliceEscapeLower(std.mem.span(mode))});
+                errno = c.EINVAL;
+                return null;
+            } else {
+                trace.log("unknown trailing bytes in mode \"{s}\" passed to fopen", .{std.fmt.fmtSliceEscapeLower(std.mem.span(mode))});
+            },
         }
     }
-    const fd = std.os.system.open(filename, flags, 0o666);
-    switch (std.os.errno(fd)) {
+
+    if (!has_leading_mode) {
+        trace.log("no first mode flag in mode \"{s}\" passed to fopen", .{std.fmt.fmtSliceEscapeLower(std.mem.span(mode))});
+        @panic("undefined behavior: no leading mode flag in fopen mode string");
+    }
+
+    const fd = os.system.open(filename, flags, 0o666);
+    switch (os.errno(fd)) {
         .SUCCESS => {},
         else => |e| {
             errno = @intFromEnum(e);
@@ -861,9 +923,9 @@ export fn freopen(filename: [*:0]const u8, mode: [*:0]const u8, stream: *c.FILE)
 export fn fclose(stream: *c.FILE) callconv(.C) c_int {
     trace.log("fclose {*}", .{stream});
     if (builtin.os.tag == .windows) {
-        std.os.close(stream.fd.?);
+        os.close(stream.fd.?);
     } else {
-        std.os.close(stream.fd);
+        os.close(stream.fd);
     }
     global.releaseFile(stream);
     return 0;
@@ -881,8 +943,8 @@ export fn fseek(stream: *c.FILE, offset: c_long, whence: c_int) callconv(.C) c_i
     // return syscall3(.lseek, @bitCast(usize, @as(isize, fd)), @bitCast(usize, offset), whence);
     //                                                                   ^
     if (@sizeOf(usize) == 4) @panic("not implemented");
-    const rc = std.os.system.lseek(stream.fd, @as(i64, @intCast(offset)), @as(usize, @intCast(whence)));
-    switch (std.os.errno(rc)) {
+    const rc = os.system.lseek(stream.fd, @as(i64, @intCast(offset)), @as(usize, @intCast(whence)));
+    switch (os.errno(rc)) {
         .SUCCESS => return 0,
         else => |e| {
             errno = @intFromEnum(e);
@@ -905,10 +967,14 @@ export fn rewind(stream: *c.FILE) callconv(.C) void {
     // TODO: should we set stream.errno if fseek failed?
 }
 
-// TODO: why is there a putc and an fputc function? They seem to be equivalent
-//       so what's the history?
+// why is there a putc and an fputc function? They seem to be equivalent
+// so what's the history?
+
+// ^ putc is allowed to be a macro that evaluates its argument more
+// than once. aliasing it as a macro is fair game, but this is alright
+// too --cancername
 comptime {
-    @export(fputc, .{ .name = "putc" });
+    @export(&fputc, .{ .name = "putc" });
 }
 
 export fn fputc(character: c_int, stream: *c.FILE) callconv(.C) c_int {
@@ -917,11 +983,11 @@ export fn fputc(character: c_int, stream: *c.FILE) callconv(.C) c_int {
         @panic("fputc not implemented");
     }
     const buf = [_]u8{@as(u8, @intCast(0xff & character))};
-    const written = std.os.system.write(stream.fd, &buf, 1);
-    switch (std.os.errno(written)) {
+    const written = os.system.write(stream.fd, &buf, 1);
+    switch (os.errno(written)) {
         .SUCCESS => {
             if (written == 1) return character;
-            stream.errno = @intFromEnum(std.os.E.IO);
+            stream.errno = @intFromEnum(os.E.IO);
             return c.EOF;
         },
         else => |e| {
@@ -940,11 +1006,11 @@ export fn _fwrite_buf(ptr: [*]const u8, size: usize, stream: *c.FILE) callconv(.
         };
         return written;
     }
-    const written = std.os.system.write(stream.fd, ptr, size);
-    switch (std.os.errno(written)) {
+    const written = os.system.write(stream.fd, ptr, size);
+    switch (os.errno(written)) {
         .SUCCESS => {
             if (written != size) {
-                stream.errno = @intFromEnum(std.os.E.IO);
+                stream.errno = @intFromEnum(os.E.IO);
             }
             return written;
         },

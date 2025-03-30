@@ -1014,7 +1014,7 @@ export fn _fwrite_buf(ptr: [*]const u8, size: usize, stream: *c.FILE) callconv(.
         switch (os.errno(written)) {
             .SUCCESS => {
                 if (written == 0) {
-                    stream.eof = true;
+                    stream.eof = 1;
                     return 0;
                 }
                 total += written;

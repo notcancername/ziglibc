@@ -1006,19 +1006,26 @@ export fn _fwrite_buf(ptr: [*]const u8, size: usize, stream: *c.FILE) callconv(.
         };
         return written;
     }
-    const written = os.system.write(stream.fd, ptr, size);
-    switch (os.errno(written)) {
-        .SUCCESS => {
-            if (written != size) {
-                stream.errno = @intFromEnum(os.E.IO);
-            }
-            return written;
-        },
-        else => |e| {
-            stream.errno = @intFromEnum(e);
-            return 0;
-        },
+
+    var total: usize = 0;
+    while (total != size) {
+        std.debug.assert(total < size); // something has gone very wrong in the kernel
+        const written = os.system.write(stream.fd, ptr, size);
+        switch (os.errno(written)) {
+            .SUCCESS => {
+                if (written == 0) {
+                    stream.eof = true;
+                    return 0;
+                }
+                total += written;
+            },
+            else => |e| {
+                stream.errno = @intFromEnum(e);
+                return 0;
+            },
+        }
     }
+    return size;
 }
 
 // TODO: can ptr be NULL?

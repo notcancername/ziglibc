@@ -734,7 +734,9 @@ export fn _fread_buf(ptr: [*]u8, size: usize, stream: *c.FILE) callconv(.C) usiz
 
     if (builtin.os.tag == .windows) {
         const actual_read_len = @as(u32, @intCast(@min(@as(u32, std.math.maxInt(u32)), size)));
-        while (true) {
+        var total: usize = 0;
+        while (total != size) {
+            std.debug.assert(total < size); // something has gone very wrong in the kernel
             var amt_read: u32 = undefined;
             // TODO: is stream.fd.? right?
             if (std.os.windows.kernel32.ReadFile(stream.fd.?, ptr, actual_read_len, &amt_read, null) == 0) {
@@ -745,8 +747,15 @@ export fn _fread_buf(ptr: [*]u8, size: usize, stream: *c.FILE) callconv(.C) usiz
                     else => |err| std.debug.panic("ReadFile unexpected error {}", .{err}),
                 }
             }
-            return @as(usize, @intCast(amt_read));
+
+            if (amt_read == 0) {
+                stream.eof = 1;
+                return total;
+            }
+
+            total += amt_read;
         }
+        return total;
     }
 
     // Prevents EINVAL.
@@ -757,17 +766,28 @@ export fn _fread_buf(ptr: [*]u8, size: usize, stream: *c.FILE) callconv(.C) usiz
     };
     const adjusted_len = @min(max_count, size);
 
-    const rc = os.system.read(stream.fd, ptr, adjusted_len);
-    switch (os.errno(rc)) {
-        .SUCCESS => {
-            if (rc == 0) stream.eof = 1;
-            return @as(usize, @intCast(rc));
-        },
-        else => |e| {
-            errno = @intFromEnum(e);
-            return 0;
-        },
+    var total: usize = 0;
+    while (total != size) {
+        std.debug.assert(total < size); // something has gone very wrong in the kernel
+
+        const rc = os.system.read(stream.fd, ptr, adjusted_len);
+        switch (os.errno(rc)) {
+            .SUCCESS => {
+                if (rc == 0) {
+                    stream.eof = 1;
+                    break;
+                }
+
+                total += @as(usize, @intCast(rc));
+            },
+            else => |e| {
+                errno = @intFromEnum(e);
+                return total;
+            },
+        }
     }
+
+    return total;
 }
 
 export fn fread(ptr: [*]u8, size: usize, nmemb: usize, stream: *c.FILE) callconv(.C) usize {
@@ -1014,8 +1034,7 @@ export fn _fwrite_buf(ptr: [*]const u8, size: usize, stream: *c.FILE) callconv(.
         switch (os.errno(written)) {
             .SUCCESS => {
                 if (written == 0) {
-                    stream.eof = 1;
-                    return 0;
+                    return total;
                 }
                 total += written;
             },
@@ -1051,27 +1070,29 @@ export fn putchar(ch: c_int) callconv(.C) c_int {
 
 export fn puts(s: [*:0]const u8) callconv(.C) c_int {
     trace.log("puts {}", .{trace.fmtStr(s)});
-    return fputs(s, stdout);
+
+    // FIXME HACK: since we don't have locking anyway, we can afford
+    // to be unsound, and just call fwrite twice :)
+
+    const len = std.mem.len(s);
+
+    var res = _fwrite_buf(s, len, stdout);
+    if (res < len) {
+        return c.EOF;
+    }
+
+    res = _fwrite_buf("\n", 1, stdout);
+    if (res < len) {
+        return c.EOF;
+    }
+
+    return 0;
 }
 
 export fn fputs(s: [*:0]const u8, stream: *c.FILE) callconv(.C) c_int {
     trace.log("fputs {} stream={*}", .{ trace.fmtStr(s), stream });
-    // NOTE: this is inneficient
-    //       Maybe I could do a writev?
-    //       Or maybe I could make 2 write calls with a locking mechanism?
-    const len = std.mem.len(s);
-    // TODO: maybe use malloc?
-    const mem = std.heap.page_allocator.alloc(u8, len + 1) catch |err| switch (err) {
-        error.OutOfMemory => {
-            // maybe fallback to 2 writes?
-            @panic("here");
-        },
-    };
-    defer std.heap.page_allocator.free(mem);
-    @memcpy(mem, s);
-    mem[len] = '\n';
 
-    const written = _fwrite_buf(mem.ptr, mem.len, stream);
+    const written = _fwrite_buf(s, std.mem.len(s), stream);
     return if (written == 0) c.EOF else 1;
 }
 

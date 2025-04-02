@@ -367,16 +367,16 @@ fn addLibcTest(
     }
     const libc_inc_path = b.pathJoin(&.{ libc_test_path, "src", "common" });
     const common_src = &[_][]const u8{
-        "fdfill",
-        "memfill",
-        "mtest",
-        "path",
-        "print",
-        "rand",
-        "runtest",
-        "setrlim",
-        "utf8",
-        "vmfill",
+        // "fdfill.c",
+        // "memfill.c",
+        // "mtest.c",
+        // "path.c",
+        "print.c",
+        // "rand.c",
+        // "runtest.c",
+        // "setrlim.c",
+        // "utf8.c",
+        // "vmfill.c",
     };
 
     // strtol, it seems there might be some disagreement between libc-test/glibc

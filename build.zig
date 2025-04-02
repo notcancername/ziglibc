@@ -22,6 +22,26 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const generate_endian_header = b.addWriteFile(
+        b.pathFromRoot("inc/gnu/endian.h"),
+        b.fmt(
+            \\#ifndef _ZIGLIBC_ENDIAN_H
+            \\#define _ZIGLIBC_ENDIAN_H
+            \\
+            \\#define __BYTE_ORDER {d}
+            \\#define _BYTE_ORDER __BYTE_ORDER
+            \\#define BYTE_ORDER __BYTE_ORDER
+            \\#define __LITTLE_ENDIAN 0
+            \\#define __BIG_ENDIAN 1
+            \\#define _LITTLE_ENDIAN 0
+            \\#define _BIG_ENDIAN 1
+            \\#define LITTLE_ENDIAN 0
+            \\#define BIG_ENDIAN 1
+            \\#endif
+            \\
+        , .{@intFromBool(target.result.cpu.arch.endian() == .big)}),
+    );
+
     const zig_start = libcbuild.addZigStart(b, target, optimize);
     b.step("start", "").dependOn(&installArtifact(b, zig_start).step);
 
@@ -33,6 +53,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    libc_full_static.step.dependOn(&generate_endian_header.step);
     b.installArtifact(libc_full_static);
     const libc_full_shared = libcbuild.addLibc(b, .{
         .variant = .full,
@@ -42,6 +63,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    libc_full_shared.step.dependOn(&generate_endian_header.step);
     b.step("libc-full-shared", "").dependOn(&installArtifact(b, libc_full_shared).step);
     // TODO: create a specs file?
     //       you can add -specs=file to the gcc command line to override values in the spec
@@ -93,6 +115,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    libc_only_gnu.step.dependOn(&generate_endian_header.step);
     b.installArtifact(libc_only_gnu);
 
     const test_step = b.step("test", "Run unit tests");
